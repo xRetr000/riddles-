@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Rataalada‑style Terminal</title>
+  <style>
+    :root {
+      --bg: #000;
+      --fg: #00ff7f;     /* terminal green */
+      --muted: #33aa66;
+      --accent: #7fffd4;
+      --error: #ff4d4d;
+      --ok: #7CFC00;
+      --border: #0a3; 
+    }
+
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      letter-spacing: 0.4px;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+    }
+
+    /* Terminal frame */
+    .frame {
+      width: min(980px, 92vw);
+      height: min(620px, 86vh);
+      border: 2px solid var(--border);
+      border-radius: 16px;
+      box-shadow: 0 0 60px rgba(0, 255, 127, .12), inset 0 0 30px rgba(0, 255, 127, .06);
+      position: relative;
+      overflow: hidden;
+      background: radial-gradient(1200px 800px at 10% 10%, rgba(0,255,127,.05), transparent 60%),
+                  radial-gradient(800px 600px at 90% 90%, rgba(0,255,127,.05), transparent 60%),
+                  #000;
+    }
+
+    /* Subtle scanlines + vignette for CRT vibe */
+    .frame::before {
+      content: "";
+      position: absolute; inset: 0; pointer-events: none;
+      background: repeating-linear-gradient(
+        to bottom,
+        rgba(0,0,0,.0),
+        rgba(0,0,0,.0) 2px,
+        rgba(0,0,0,.08) 3px,
+        rgba(0,0,0,.08) 4px
+      );
+      mix-blend-mode: multiply;
+      opacity: .6;
+    }
+    .frame::after {
+      content: "";
+      position: absolute; inset: 0; pointer-events: none;
+      box-shadow: inset 0 0 120px rgba(0,0,0,.9);
+    }
+
+    /* Header bar */
+    .chrome {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(#001a0f, #000);
+    }
+    .dot { width: 10px; height: 10px; border-radius: 50%; }
+    .dot.red { background: #ff5f56; }
+    .dot.yellow { background: #ffbd2e; }
+    .dot.green { background: #27c93f; }
+    .title { color: var(--muted); opacity: .9; font-size: 14px; }
+
+    /* Terminal content */
+    .viewport {
+      position: absolute; inset: 42px 0 0 0; /* below chrome */
+      overflow: auto;
+      padding: 18px 18px 84px 18px; /* space for input bar */
+      scroll-behavior: smooth;
+    }
+
+    .line { white-space: pre-wrap; margin: 2px 0; }
+    .line .muted { color: var(--muted); }
+    .line .error { color: var(--error); }
+    .line .ok { color: var(--ok); }
+    .line .accent { color: var(--accent); }
+
+    /* Input bar fixed at bottom */
+    .inputbar {
+      position: absolute; left: 0; right: 0; bottom: 0;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      border-top: 1px solid var(--border);
+      background: linear-gradient(#000, #001a0f);
+    }
+
+    .prompt { color: var(--accent); }
+    #cmd {
+      width: 100%;
+      background: transparent;
+      color: var(--fg);
+      border: none;
+      outline: none;
+      font: inherit;
+      padding: 6px 4px;
+    }
+
+    .cursor {
+      display: inline-block;
+      width: 7px; height: 1.2em;
+      background: var(--fg);
+      margin-left: 3px;
+      animation: blink 1s steps(1) infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    .hint { color: var(--muted); font-style: italic; }
+    .kbd {
+      border: 1px solid var(--border);
+      padding: 1px 4px; border-radius: 6px; font-size: 12px; opacity: .9;
+    }
+
+    /* Mobile adjustments */
+    @media (max-width: 640px) {
+      .frame { height: 92vh; width: 96vw; }
+      .viewport { padding-bottom: 96px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="frame" role="application" aria-label="Rataalada style terminal">
+    <div class="chrome">
+      <div class="dot red"></div>
+      <div class="dot yellow"></div>
+      <div class="dot green"></div>
+      <div class="title">rataalada.local ~ terminal</div>
+    </div>
+
+    <div id="view" class="viewport" aria-live="polite" aria-atomic="false"></div>
+
+    <form id="bar" class="inputbar" autocomplete="off">
+      <span class="prompt">&gt;</span>
+      <input id="cmd" name="cmd" type="text" spellcheck="false" autofocus placeholder="type 'help' and press Enter" />
+      <div class="hint"><span class="kbd">↑</span>/<span class="kbd">↓</span> history</div>
+    </form>
+  </div>
+
+  <script>
+    // ---------------- Terminal helpers ----------------
+    const view = document.getElementById('view');
+    const form = document.getElementById('bar');
+    const input = document.getElementById('cmd');
+
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+    function el(tag, cls, text) {
+      const e = document.createElement(tag);
+      if (cls) e.className = cls;
+      if (text != null) e.textContent = text;
+      return e;
+    }
+
+    async function typeLine(text = "", { speed = 0, classes = "line" } = {}) {
+      const line = el('div', classes);
+      view.appendChild(line);
+      // typing effect
+      if (speed > 0) {
+        for (let i = 0; i < text.length; i++) {
+          line.textContent += text[i];
+          view.scrollTop = view.scrollHeight;
+          await sleep(speed);
+        }
+      } else {
+        line.textContent = text;
+      }
+      view.scrollTop = view.scrollHeight;
+      return line;
+    }
+
+    function print(text = "", cls = "line") { return typeLine(text, { speed: 0, classes: cls }); }
+
+    function promptLine(command) {
+      const line = el('div', 'line');
+      const p = el('span', 'accent', '>');
+      const t = el('span', '', ' ' + command);
+      line.appendChild(p); line.appendChild(t);
+      view.appendChild(line);
+      view.scrollTop = view.scrollHeight;
+    }
+
+    // --------------- State & persistence ---------------
+    const store = {
+      read() {
+        try { return JSON.parse(localStorage.getItem('rataalada_state') || '{}'); } catch { return {}; }
+      },
+      write(s) { localStorage.setItem('rataalada_state', JSON.stringify(s)); }
+    };
+
+    const state = Object.assign({
+      history: [],
+      histIndex: -1,
+      riddleIndex: 0,
+      solved: [],
+      sessionStart: Date.now()
+    }, store.read());
+
+    function save() { store.write(state); }
+
+    // --------------- Content (riddles, banners) ---------------
+    const banner = [
+      "Initializing secure channel…",
+      "Establishing handshake [OK]",
+      "Cipher suite: HEDGED-MAZE v3",
+      "Welcome, detective. Type 'help' to begin."
+    ];
+
+    const riddles = [
+      {
+        q: "I’m first on earth, second in heaven, I appear twice in a week — what am I?",
+        a: ["e"],
+        hint: "Think letters, not things.",
+        reward: "{attachment_unlocked: crime_scene.png}"
+      },
+      {
+        q: "I can be cracked, made, told, and played. What am I?",
+        a: ["joke"],
+        hint: "Four verbs, one noun.",
+        reward: "{case_note_unlocked: /notes/bluebook.txt}"
+      },
+      {
+        q: "What disappears as soon as you say its name?",
+        a: ["silence"],
+        hint: "Shhh…",
+        reward: "{audio_fragment_unlocked: hush.wav}"
+      }
+    ];
+
+    // --------------- Command implementations ---------------
+    const commands = {
+      async help() {
+        await print("Available commands:");
+        await print("  help            show this help");
+        await print("  about           info about this site");
+        await print("  start           begin riddles");
+        await print("  hint            show a hint (during a riddle)");
+        await print("  answer <text>   submit an answer");
+        await print("  clear / cls     clear the screen");
+        await print("  echo <text>     print text");
+        await print("  date            show current date/time");
+        await print("  progress        show riddle progress");
+        await print("  theme <green|amber>  change color theme");
+      },
+      async about() {
+        await print("Rataalada‑style terminal built with vanilla HTML/CSS/JS.");
+        await print("No backend required. All progress stored locally.");
+      },
+      async clear() { view.innerHTML = ''; },
+      async cls() { return commands.clear(); },
+      async echo(_, arg) { await print(arg || ''); },
+      async date() { await print(new Date().toString()); },
+      async progress() {
+        const total = riddles.length; const solved = state.solved.length;
+        await print(`Riddles solved: ${solved}/${total}`);
+        if (solved) await print("Solved: " + state.solved.join(", "));
+      },
+      async theme(_, arg) {
+        const val = (arg||'').toLowerCase();
+        if (val === 'amber') {
+          document.documentElement.style.setProperty('--fg', '#ffbf00');
+          document.documentElement.style.setProperty('--muted', '#c79b2b');
+          document.documentElement.style.setProperty('--accent', '#ffe08a');
+          document.documentElement.style.setProperty('--border', '#b8860b');
+          await print("Theme set to amber.");
+        } else if (val === 'green') {
+          document.documentElement.style.setProperty('--fg', '#00ff7f');
+          document.documentElement.style.setProperty('--muted', '#33aa66');
+          document.documentElement.style.setProperty('--accent', '#7fffd4');
+          document.documentElement.style.setProperty('--border', '#0a3');
+          await print("Theme set to green.");
+        } else {
+          await print("Usage: theme <green|amber>");
+        }
+      },
+      async start() { await nextRiddle(true); },
+      async hint() {
+        const r = riddles[state.riddleIndex];
+        if (!r) return print("No active riddle. Type 'start'.");
+        await print("Hint: " + r.hint, 'line muted');
+      },
+      async answer(_, arg) { await submitAnswer(arg); }
+    };
+
+    // --------------- Riddle flow ---------------
+    async function nextRiddle(force=false) {
+      const idx = state.riddleIndex;
+      if (idx >= riddles.length) {
+        await print("All riddles solved. You are worthy.", 'line ok');
+        return;
+      }
+      if (!force && state.solved.includes(idx)) {
+        state.riddleIndex++; save();
+        return nextRiddle();
+      }
+      const r = riddles[idx];
+      await typeLine("Riddle " + (idx+1) + "/" + riddles.length + ":", { speed: 0 });
+      await typeLine(r.q, { speed: 8 });
+      await print("Submit with: \"answer <text>\"  | need help? type 'hint'", 'line muted');
+    }
+
+    async function submitAnswer(raw) {
+      const idx = state.riddleIndex;
+      const r = riddles[idx];
+      if (!r) return print("No active riddle. Type 'start'.");
+      const ans = (raw||'').trim().toLowerCase();
+      if (!ans) return print("Usage: answer <text>");
+      if (r.a.includes(ans)) {
+        await print("Correct.", 'line ok');
+        await print("Reward → " + r.reward, 'line');
+        state.solved.push(idx);
+        state.riddleIndex++;
+        save();
+        await sleep(400);
+        await nextRiddle();
+      } else {
+        await print("Wrong. Try again…", 'line error');
+      }
+    }
+
+    // --------------- Input handling ---------------
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const raw = input.value; const text = raw.trim();
+      if (!text) return;
+      // echo command to screen
+      promptLine(text);
+
+      // push to history
+      state.history.push(text);
+      state.histIndex = state.history.length;
+      save();
+
+      // parse command
+      const [cmd, ...rest] = text.split(/\s+/);
+      const arg = rest.join(' ');
+      const fn = commands[cmd.toLowerCase()];
+
+      if (fn) {
+        await fn(cmd, arg);
+      } else {
+        // If no command and we are in riddle flow, allow raw answers by just typing the word
+        const r = riddles[state.riddleIndex];
+        if (r && r.a.includes(text.toLowerCase())) {
+          await submitAnswer(text);
+        } else {
+          await print(`Unknown command: ${cmd}. Type 'help'.`, 'line error');
+        }
+      }
+
+      input.value = '';
+      input.focus();
+    });
+
+    // History navigation with Up/Down arrows
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowUp') {
+        if (state.histIndex > 0) {
+          state.histIndex--; input.value = state.history[state.histIndex] || ''; e.preventDefault();
+        }
+      } else if (e.key === 'ArrowDown') {
+        if (state.histIndex < state.history.length) {
+          state.histIndex++; input.value = state.history[state.histIndex] || ''; e.preventDefault();
+        }
+      }
+    });
+
+    // --------------- Boot sequence ---------------
+    (async function boot(){
+      for (const line of banner) { await typeLine(line, { speed: 10 }); await sleep(100); }
+      await print("");
+      if (state.solved.length) {
+        await print(`Welcome back. Progress ${state.solved.length}/${riddles.length}. Type 'start' to continue.`, 'line');
+      } else {
+        await print("Type 'start' to face your first riddle. Or 'help' for commands.", 'line');
+      }
+      input.focus();
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Riddler’s Game</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="terminal">
+        <h2>???</h2>
+        <p>{{ question }}</p>
+
+        {% if not finished %}
+        <form method="POST">
+            <input type="text" name="answer" placeholder="Type your answer..." autofocus>
+            <button type="submit">Submit</button>
+        </form>
+        {% endif %}
+
+        <p class="message">{{ message }}</p>
+    </div>
+</body>
+</html>
